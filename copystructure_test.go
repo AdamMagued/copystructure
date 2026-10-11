@@ -1208,3 +1208,188 @@ func TestCopy_customCopierShallowValue(t *testing.T) {
 		t.Fatal("value not shallow copied")
 	}
 }
+
+func TestCopy_nestedStructUnexportedEmbedded(t *testing.T) {
+	type subTest struct {
+		Sub string
+	}
+
+	type test struct {
+		subTest
+
+		Value string
+	}
+
+	v := test{Value: "foo", subTest: subTest{Sub: "bar"}}
+
+	result, err := Copy(v)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	if !reflect.DeepEqual(result, v) {
+		t.Fatalf("bad: %#v", result)
+	}
+}
+
+func TestCopy_nestedStructUnexportedEmbeddedDeep(t *testing.T) {
+	type subDeep struct {
+		DeepValue string
+		privDeep  int
+	}
+
+	type subMiddle struct {
+		subDeep
+		MiddleValue string
+		privMiddle  int
+	}
+
+	type test struct {
+		subMiddle
+		Value string
+	}
+
+	v := test{
+		subMiddle: subMiddle{
+			subDeep: subDeep{
+				DeepValue: "deep",
+				privDeep:  10,
+			},
+			MiddleValue: "middle",
+			privMiddle:  20,
+		},
+		Value: "top",
+	}
+
+	result, err := Copy(v)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	expected := test{
+		subMiddle: subMiddle{
+			subDeep: subDeep{
+				DeepValue: "deep",
+				privDeep:  0,
+			},
+			MiddleValue: "middle",
+			privMiddle:  0,
+		},
+		Value: "top",
+	}
+
+	if !reflect.DeepEqual(result, expected) {
+		t.Fatalf("expected %#v, got %#v", expected, result)
+	}
+}
+
+func TestCopy_nestedStructUnexportedEmbeddedComplexFields(t *testing.T) {
+	type sub struct {
+		Slice []string
+		Map   map[string]int
+		Ptr   *int
+		priv  string
+	}
+
+	type test struct {
+		sub
+		Name string
+	}
+
+	num := 42
+	v := test{
+		sub: sub{
+			Slice: []string{"alpha", "bravo"},
+			Map:   map[string]int{"one": 1},
+			Ptr:   &num,
+			priv:  "secret",
+		},
+		Name: "sample",
+	}
+
+	result, err := Copy(v)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	copied := result.(test)
+	if copied.priv != "" {
+		t.Fatalf("private field should not be copied, got %q", copied.priv)
+	}
+
+	// Verify deep copy of slice
+	copied.sub.Slice[0] = "modified"
+	if v.sub.Slice[0] == "modified" {
+		t.Fatal("slice was not deeply copied")
+	}
+
+	// Verify deep copy of map
+	copied.sub.Map["two"] = 2
+	if _, ok := v.sub.Map["two"]; ok {
+		t.Fatal("map was not deeply copied")
+	}
+
+	// Verify deep copy of pointer
+	*copied.sub.Ptr = 99
+	if *v.sub.Ptr == 99 {
+		t.Fatal("pointer target was not deeply copied")
+	}
+}
+
+func TestCopy_nestedStructUnexportedEmbeddedPointerReceiver(t *testing.T) {
+	type subTest struct {
+		Sub string
+	}
+
+	type test struct {
+		subTest
+
+		Value string
+	}
+
+	v := &test{Value: "foo", subTest: subTest{Sub: "bar"}}
+
+	result, err := Copy(v)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	if !reflect.DeepEqual(result, v) {
+		t.Fatalf("bad: %#v", result)
+	}
+}
+
+func TestCopy_nestedStructUnexportedEmbeddedTags(t *testing.T) {
+	type sub struct {
+		Ignored string  `copy:"ignore"`
+		Shallow *string `copy:"shallow"`
+	}
+
+	type test struct {
+		sub
+		Normal string
+	}
+
+	originalStr := "shared"
+	v := test{
+		sub: sub{
+			Ignored: "should-be-cleared",
+			Shallow: &originalStr,
+		},
+		Normal: "hello",
+	}
+
+	result, err := Copy(v)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	copied := result.(test)
+	if copied.Ignored != "" {
+		t.Fatalf("ignored field should be zero value, got %q", copied.Ignored)
+	}
+	if copied.Shallow != v.Shallow {
+		t.Fatal("shallow pointer was not copied as identical pointer")
+	}
+}
+

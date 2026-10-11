@@ -262,8 +262,12 @@ func (w *walker) Exit(l reflectwalk.Location) error {
 			s := w.cs[len(w.cs)-1]
 			sf := reflect.Indirect(s).FieldByName(f.Name)
 
-			if sf.CanSet() {
-				sf.Set(v)
+			if sf.IsValid() {
+				if sf.CanSet() {
+					sf.Set(v)
+				} else if f.Anonymous {
+					copyExportedFields(sf, v)
+				}
 			}
 		}
 	case reflectwalk.WalkLoc:
@@ -419,21 +423,24 @@ func (w *walker) Struct(s reflect.Value) error {
 	w.lock(s)
 
 	var v reflect.Value
-	if c, ok := w.copiers[s.Type()]; ok {
-		// We have a Copier for this struct, so we use that copier to
-		// get the copy, and we ignore anything deeper than this.
-		w.ignoreDepth = w.depth
+	if s.CanInterface() {
+		if c, ok := w.copiers[s.Type()]; ok {
+			// We have a Copier for this struct, so we use that copier to
+			// get the copy, and we ignore anything deeper than this.
+			w.ignoreDepth = w.depth
 
-		dup, err := c(s.Interface())
-		if err != nil {
-			return err
+			dup, err := c(s.Interface())
+			if err != nil {
+				return err
+			}
+
+			// We need to put a pointer to the value on the value stack,
+			// so allocate a new pointer and set it.
+			v = reflect.New(s.Type())
+			reflect.Indirect(v).Set(reflect.ValueOf(dup))
 		}
-
-		// We need to put a pointer to the value on the value stack,
-		// so allocate a new pointer and set it.
-		v = reflect.New(s.Type())
-		reflect.Indirect(v).Set(reflect.ValueOf(dup))
-	} else {
+	}
+	if !v.IsValid() {
 		// No copier, we copy ourselves and allow reflectwalk to guide
 		// us deeper into the structure for copying.
 		v = reflect.New(s.Type())
@@ -455,8 +462,19 @@ func (w *walker) StructField(f reflect.StructField, v reflect.Value) error {
 
 	// If PkgPath is non-empty, this is a private (unexported) field.
 	// We do not set this unexported since the Go runtime doesn't allow us.
+	// However, if it is an embedded struct, we walk it so exported fields
+	// within it can be copied.
 	if f.PkgPath != "" {
-		return reflectwalk.SkipEntry
+		if !f.Anonymous {
+			return reflectwalk.SkipEntry
+		}
+		t := f.Type
+		if t.Kind() == reflect.Ptr {
+			t = t.Elem()
+		}
+		if t.Kind() != reflect.Struct {
+			return reflectwalk.SkipEntry
+		}
 	}
 
 	switch f.Tag.Get(tagKey) {
@@ -466,8 +484,12 @@ func (w *walker) StructField(f reflect.StructField, v reflect.Value) error {
 		if v.IsValid() {
 			s := w.cs[len(w.cs)-1]
 			sf := reflect.Indirect(s).FieldByName(f.Name)
-			if sf.CanSet() {
-				sf.Set(v)
+			if sf.IsValid() {
+				if sf.CanSet() {
+					sf.Set(v)
+				} else if f.Anonymous {
+					copyExportedFields(sf, v)
+				}
 			}
 		}
 
@@ -628,4 +650,38 @@ func wrapPtr(v reflect.Value) reflect.Value {
 	vPtr := reflect.New(v.Type())
 	vPtr.Elem().Set(v)
 	return vPtr
+}
+
+// copyExportedFields copies all exported fields from src to dst.
+// This is used to populate exported fields of unexported embedded structs
+// where the embedded field itself cannot be set directly via reflection.
+func copyExportedFields(dst, src reflect.Value) {
+	if !dst.IsValid() || !src.IsValid() {
+		return
+	}
+	if dst.Kind() == reflect.Ptr {
+		if dst.IsNil() {
+			return
+		}
+		dst = dst.Elem()
+	}
+	if src.Kind() == reflect.Ptr {
+		if src.IsNil() {
+			return
+		}
+		src = src.Elem()
+	}
+	if dst.Kind() != reflect.Struct || src.Kind() != reflect.Struct {
+		return
+	}
+
+	for i := 0; i < dst.NumField(); i++ {
+		df := dst.Field(i)
+		sf := src.Field(i)
+		if df.CanSet() {
+			df.Set(sf)
+		} else if dst.Type().Field(i).Anonymous {
+			copyExportedFields(df, sf)
+		}
+	}
 }

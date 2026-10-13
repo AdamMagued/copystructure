@@ -1055,7 +1055,7 @@ func TestCopy_unexportedFieldFirst(t *testing.T) {
 
 	v := &T{
 		M: map[string]*P{
-			"a": &P{Old: "", New: "2"},
+			"a": {Old: "", New: "2"},
 		},
 	}
 
@@ -1194,7 +1194,7 @@ func TestCopy_customCopierShallowValue(t *testing.T) {
 
 	cfg := Config{
 		ShallowCopiers: map[reflect.Type]struct{}{
-			reflect.TypeOf(T{}): struct{}{},
+			reflect.TypeOf(T{}): {},
 		},
 	}
 	result, err := cfg.Copy(v)
@@ -1206,5 +1206,275 @@ func TestCopy_customCopierShallowValue(t *testing.T) {
 
 	if v != copiedVal {
 		t.Fatal("value not shallow copied")
+	}
+}
+
+func TestCopy_wrapPointerStruct(t *testing.T) {
+	type Inner struct {
+		Bar string
+	}
+	type Test struct {
+		Foo   string
+		Inner Inner
+	}
+
+	v := Test{
+		Foo:   "hello",
+		Inner: Inner{Bar: "world"},
+	}
+
+	cfg := Config{WrapPointer: true}
+	result, err := cfg.Copy(v)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	ptr, ok := result.(*Test)
+	if !ok {
+		t.Fatalf("expected *Test, got %T", result)
+	}
+
+	if ptr.Foo != "hello" || ptr.Inner.Bar != "world" {
+		t.Fatalf("unexpected content: %#v", ptr)
+	}
+
+	// Verify the pointer element can be set
+	elem := reflect.ValueOf(result).Elem()
+	if !elem.CanSet() {
+		t.Fatal("expected element to be settable")
+	}
+
+	// Verify deep copy mutation independence
+	ptr.Foo = "changed"
+	ptr.Inner.Bar = "changed"
+	if v.Foo != "hello" || v.Inner.Bar != "world" {
+		t.Fatalf("original modified: %#v", v)
+	}
+}
+
+func TestCopy_wrapPointerStructPtr(t *testing.T) {
+	type Test struct {
+		Foo string
+	}
+
+	v := &Test{Foo: "hello"}
+
+	cfg := Config{WrapPointer: true}
+	result, err := cfg.Copy(v)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	ptr, ok := result.(*Test)
+	if !ok {
+		t.Fatalf("expected *Test, got %T", result)
+	}
+
+	if ptr == v {
+		t.Fatal("expected pointer to be a new copy, but pointers are identical")
+	}
+
+	if ptr.Foo != "hello" {
+		t.Fatalf("unexpected content: %#v", ptr)
+	}
+}
+
+func TestCopy_wrapPointerInterface(t *testing.T) {
+	type Test struct {
+		Name  string
+		Count int
+	}
+
+	var v interface{} = Test{Name: "config", Count: 10}
+
+	cfg := Config{WrapPointer: true}
+	result, err := cfg.Copy(v)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	ptr, ok := result.(*Test)
+	if !ok {
+		t.Fatalf("expected *Test, got %T", result)
+	}
+
+	if ptr.Name != "config" || ptr.Count != 10 {
+		t.Fatalf("unexpected content: %#v", ptr)
+	}
+
+	elem := reflect.ValueOf(result).Elem()
+	if !elem.CanSet() {
+		t.Fatal("expected element to be settable via reflection")
+	}
+}
+
+func TestCopy_wrapPointerPrimitive(t *testing.T) {
+	cfg := Config{WrapPointer: true}
+
+	// int
+	rInt, err := cfg.Copy(42)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+	pInt, ok := rInt.(*int)
+	if !ok || *pInt != 42 {
+		t.Fatalf("bad int: %T %#v", rInt, rInt)
+	}
+
+	// string
+	rStr, err := cfg.Copy("hello")
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+	pStr, ok := rStr.(*string)
+	if !ok || *pStr != "hello" {
+		t.Fatalf("bad string: %T %#v", rStr, rStr)
+	}
+
+	// bool
+	rBool, err := cfg.Copy(true)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+	pBool, ok := rBool.(*bool)
+	if !ok || *pBool != true {
+		t.Fatalf("bad bool: %T %#v", rBool, rBool)
+	}
+
+	// pointer to int
+	val := 100
+	rPtr, err := cfg.Copy(&val)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+	pPtr, ok := rPtr.(*int)
+	if !ok || *pPtr != 100 {
+		t.Fatalf("bad *int: %T %#v", rPtr, rPtr)
+	}
+	if pPtr == &val {
+		t.Fatal("expected new pointer instance")
+	}
+}
+
+func TestCopy_wrapPointerSlice(t *testing.T) {
+	v := []string{"foo", "bar"}
+
+	cfg := Config{WrapPointer: true}
+	result, err := cfg.Copy(v)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	ptr, ok := result.(*[]string)
+	if !ok {
+		t.Fatalf("expected *[]string, got %T", result)
+	}
+
+	if !reflect.DeepEqual(*ptr, v) {
+		t.Fatalf("unexpected content: %#v", *ptr)
+	}
+
+	// Verify deep copy
+	(*ptr)[0] = "baz"
+	if v[0] != "foo" {
+		t.Fatalf("original modified: %#v", v)
+	}
+}
+
+func TestCopy_wrapPointerMap(t *testing.T) {
+	v := map[string]int{"a": 1, "b": 2}
+
+	cfg := Config{WrapPointer: true}
+	result, err := cfg.Copy(v)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	ptr, ok := result.(*map[string]int)
+	if !ok {
+		t.Fatalf("expected *map[string]int, got %T", result)
+	}
+
+	if !reflect.DeepEqual(*ptr, v) {
+		t.Fatalf("unexpected content: %#v", *ptr)
+	}
+
+	// Verify deep copy
+	(*ptr)["a"] = 99
+	if v["a"] != 1 {
+		t.Fatalf("original modified: %#v", v)
+	}
+}
+
+func TestCopy_wrapPointerArray(t *testing.T) {
+	v := [2]string{"foo", "bar"}
+
+	cfg := Config{WrapPointer: true}
+	result, err := cfg.Copy(v)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	ptr, ok := result.(*[2]string)
+	if !ok {
+		t.Fatalf("expected *[2]string, got %T", result)
+	}
+
+	if !reflect.DeepEqual(*ptr, v) {
+		t.Fatalf("unexpected content: %#v", *ptr)
+	}
+
+	(*ptr)[0] = "baz"
+	if v[0] != "foo" {
+		t.Fatalf("original modified: %#v", v)
+	}
+}
+
+func TestCopy_wrapPointerCustomCopier(t *testing.T) {
+	type Custom struct {
+		Val string
+	}
+
+	v := Custom{Val: "custom"}
+
+	cfg := Config{
+		WrapPointer: true,
+		Copiers: map[reflect.Type]CopierFunc{
+			reflect.TypeOf(Custom{}): func(val interface{}) (interface{}, error) {
+				c := val.(Custom)
+				return Custom{Val: c.Val + "-copied"}, nil
+			},
+		},
+	}
+
+	result, err := cfg.Copy(v)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	ptr, ok := result.(*Custom)
+	if !ok {
+		t.Fatalf("expected *Custom, got %T", result)
+	}
+
+	if ptr.Val != "custom-copied" {
+		t.Fatalf("unexpected content: %#v", ptr)
+	}
+}
+
+func TestCopy_wrapPointerTypedNil(t *testing.T) {
+	type Test struct {
+		Val string
+	}
+
+	var v *Test
+	cfg := Config{WrapPointer: true}
+	result, err := cfg.Copy(v)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	if ptr, ok := result.(*Test); !ok || ptr != nil {
+		t.Fatalf("expected nil *Test, got %T %#v", result, result)
 	}
 }

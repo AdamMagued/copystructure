@@ -18,20 +18,19 @@ const tagKey = "copy"
 //
 // For structs, copy behavior can be controlled with struct tags. For example:
 //
-//   struct {
-//     Name string
-//     Data *bytes.Buffer `copy:"shallow"`
-//   }
+//	struct {
+//	  Name string
+//	  Data *bytes.Buffer `copy:"shallow"`
+//	}
 //
 // The available tag values are:
 //
-// * "ignore" - The field will be ignored, effectively resulting in it being
-//   assigned the zero value in the copy.
+//   - "ignore" - The field will be ignored, effectively resulting in it being
+//     assigned the zero value in the copy.
 //
-// * "shallow" - The field will be be shallow copied. This means that references
-//   values such as pointers, maps, slices, etc. will be directly assigned
-//   versus deep copied.
-//
+//   - "shallow" - The field will be be shallow copied. This means that references
+//     values such as pointers, maps, slices, etc. will be directly assigned
+//     versus deep copied.
 func Copy(v interface{}) (interface{}, error) {
 	return Config{}.Copy(v)
 }
@@ -91,6 +90,10 @@ type Config struct {
 	// shallow copied no matter where they are encountered. Use the
 	// global ShallowCopiers if this is nil.
 	ShallowCopiers map[reflect.Type]struct{}
+
+	// WrapPointer, if true, will preserve the pointer wrapping on the
+	// top-level result rather than unwrapping it to a value.
+	WrapPointer bool
 }
 
 func (c Config) Copy(v interface{}) (interface{}, error) {
@@ -112,6 +115,8 @@ func (c Config) Copy(v interface{}) (interface{}, error) {
 		c.ShallowCopiers = ShallowCopiers
 	}
 	w.shallowCopiers = c.ShallowCopiers
+
+	w.wrapPointer = c.WrapPointer
 
 	err := reflectwalk.Walk(v, w)
 	if err != nil {
@@ -161,6 +166,8 @@ type walker struct {
 	locks []sync.Locker
 	// take locks while walking the structure
 	useLocks bool
+
+	wrapPointer bool
 }
 
 func (w *walker) Enter(l reflectwalk.Location) error {
@@ -526,6 +533,10 @@ func (w *walker) replacePointerMaybe() {
 	// Determine the last pointer value. If it is NOT a pointer, then
 	// we need to push that onto the stack.
 	if !w.pointerPeek() {
+		if w.wrapPointer && w.depth == 1 {
+			return
+		}
+
 		w.valPush(reflect.Indirect(w.valPop()))
 		return
 	}
